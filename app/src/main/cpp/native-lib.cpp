@@ -18,8 +18,9 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_ng1ok_linker_MainActivity_test(JNIEnv *env, jobject thiz) {
     MyLoader myLoader;
+    LOGD("test start");
+//    myLoader.run("/data/local/tmp/libil2cpp_str_sym.so");
     myLoader.run("/data/local/tmp/libdemo1.so");
-
     LOGD("test done....");
 
 }

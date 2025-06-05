@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <android/dlext.h>
+#include <link.h>
 
 #if defined(__aarch64__) || defined(__x86_64__)
 #define USE_RELA 1
@@ -19,6 +20,8 @@
 typedef void (*linker_dtor_function_t)();
 typedef void (*linker_ctor_function_t)(int, char**, char**);
 
+
+#define FLAG_GNU_HASH         0x00000040
 
 template<typename T>
 struct LinkedListEntry {
@@ -507,11 +510,8 @@ public:
     const char* get_string(ElfW(Word) index) const ;
     void set_dt_flags_1(uint32_t dt_flags_1) ;
 
-
     bool prelink_image();
-    void fortest() {
-        LOGD("gnu_bloom_filter_ = %lx", gnu_bloom_filter_);
-    };
+
 
     bool link_image();
 
@@ -521,7 +521,7 @@ public:
 
     bool find_symbol_by_name(SymbolName& symbol_name, const ElfW(Sym)** symbol) const;
 
-    bool is_gnu_hash() const;
+    bool is_gnu_hash();
 
     bool elf_lookup(SymbolName& symbol_name, uint32_t* symbol_index) const;
 

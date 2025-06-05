@@ -2,206 +2,18 @@
 // Created by user on 2024/6/15.
 //
 #include "MyLoader.h"
+#include <string>
+#include <unordered_map>
+#include "gnu_helper.h"
+#include "Utils.h"
 
 int myneed[20];
 uint32_t needed_count = 0;
+std::unordered_map<std::string, Module> g_modules;
+
 
 const char* get_realpath() {
     return "";
-}
-
-
-int Utils::phdr_table_set_gnu_relro_prot(const ElfW(Phdr)* phdr_table, size_t phdr_count,
-                                          ElfW(Addr) load_bias, int prot_flags) {
-    const ElfW(Phdr)* phdr = phdr_table;
-    const ElfW(Phdr)* phdr_limit = phdr + phdr_count;
-
-    for (phdr = phdr_table; phdr < phdr_limit; phdr++) {
-        if (phdr->p_type != PT_GNU_RELRO) {
-            continue;
-        }
-        ElfW(Addr) seg_page_start = PAGE_START(phdr->p_vaddr) + load_bias;
-        ElfW(Addr) seg_page_end   = PAGE_END(phdr->p_vaddr + phdr->p_memsz) + load_bias;
-
-        int ret = mprotect(reinterpret_cast<void*>(seg_page_start),
-                           seg_page_end - seg_page_start,
-                           prot_flags);
-        if (ret < 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-size_t Utils::page_offset(off64_t offset) {
-    return static_cast<size_t>(offset & (PAGE_SIZE-1));
-}
-
-off64_t Utils::page_start(off64_t offset) {
-
-    return offset & kPageMask;
-}
-
-bool Utils::safe_add(off64_t* out, off64_t a, size_t b) {
-    if (static_cast<uint64_t>(INT64_MAX - a) < b) {
-        return false;
-    }
-
-    *out = a + b;
-    return true;
-}
-
-void* Utils::getMapData(int fd, off64_t base_offset, size_t elf_offset, size_t size) {
-    off64_t offset;
-    safe_add(&offset, base_offset, elf_offset);
-
-    off64_t page_min = page_start(offset);
-    off64_t end_offset;
-
-    safe_add(&end_offset, offset, size);
-    safe_add(&end_offset, end_offset, page_offset(offset));
-
-    size_t map_size = static_cast<size_t>(end_offset - page_min);
-
-    uint8_t* map_start = static_cast<uint8_t*>(
-            mmap64(nullptr, map_size, PROT_READ, MAP_PRIVATE, fd, page_min));
-
-    if (map_start == MAP_FAILED) {
-        return nullptr;
-    }
-
-    return map_start + page_offset(offset);
-
-}
-
-void Utils::phdr_table_get_dynamic_section(const ElfW(Phdr)* phdr_table, size_t phdr_count,
-                                           ElfW(Addr) load_bias, ElfW(Dyn)** dynamic,
-                                           ElfW(Word)* dynamic_flags) {
-    *dynamic = nullptr;
-    for (size_t i = 0; i<phdr_count; ++i) {
-        const ElfW(Phdr)& phdr = phdr_table[i];
-        if (phdr.p_type == PT_DYNAMIC) {
-            *dynamic = reinterpret_cast<ElfW(Dyn)*>(load_bias + phdr.p_vaddr);
-            if (dynamic_flags) {
-                *dynamic_flags = phdr.p_flags;
-            }
-            return;
-        }
-    }
-}
-
-
-ElfW(Addr) Utils::get_export_func(char* path, char* func_name) {
-
-    struct stat sb;
-    int fd = open(path, O_RDONLY);
-    fstat(fd, &sb);
-    void* base = mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
-
-    // 讀取elf header
-    ElfW(Ehdr) header;
-    memcpy(&(header), base, sizeof(header));
-
-    // 讀取Section header table
-    size_t size = header.e_shnum * sizeof(ElfW(Shdr));
-    void* tmp = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); // 注: 必須要 MAP_ANONYMOUS
-    LOGD("error: %s", strerror(errno));
-    ElfW(Shdr)* shdr_table;
-    memcpy(tmp, (void*)((ElfW(Off))base + header.e_shoff), size);
-    shdr_table = static_cast<ElfW(Shdr)*>(tmp);
-
-    char* shstrtab = reinterpret_cast<char*>(shdr_table[header.e_shstrndx].sh_offset + (ElfW(Off))base);
-
-    void* symtab = nullptr;
-    char* strtab = nullptr;
-    uint32_t symtab_size = 0;
-
-    // 遍歷獲取.symtab和.strtab節
-    for (size_t i = 0; i < header.e_shnum; ++i) {
-        const ElfW(Shdr) *shdr = &shdr_table[i];
-        char* section_name = shstrtab + shdr->sh_name;
-        if(!strcmp(section_name, ".symtab")) {
-//            LOGD("[test] %d: shdr->sh_name = %s", i, (shstrtab + shdr->sh_name));
-            symtab = reinterpret_cast<void*>(shdr->sh_offset + (ElfW(Off))base);
-            symtab_size = shdr->sh_size;
-        }
-        if(!strcmp(section_name, ".strtab")) {
-//            LOGD("[test] %d: shdr->sh_name = %s", i, (shstrtab + shdr->sh_name));
-            strtab = reinterpret_cast<char*>(shdr->sh_offset + (ElfW(Off))base);
-        }
-
-        if(strtab && symtab)break;
-    }
-
-    // 讀取 Symbol table
-    ElfW(Sym)* sym_table;
-    tmp = mmap(nullptr, symtab_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    memcpy(tmp, symtab, symtab_size);
-    sym_table = static_cast<ElfW(Sym)*>(tmp);
-
-    int sym_num = symtab_size / sizeof(ElfW(Sym));
-
-    // 遍歷 Symbol table
-    for(int i = 0; i < sym_num; i++) {
-        const ElfW(Sym) *sym = &sym_table[i];
-        char* sym_name = strtab + sym->st_name;
-        if(strstr(sym_name, func_name)) {
-            return sym->st_value;
-        }
-
-
-    }
-
-
-    return 0;
-}
-
-soinfo* Utils::get_soinfo(const char* so_name) {
-    typedef soinfo* (*FunctionPtr)(ElfW(Addr));
-
-    char line[1024];
-    ElfW(Addr) linker_base = 0;
-    ElfW(Addr) so_addr = 0;
-    FILE *fp=fopen("/proc/self/maps","r");
-    while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, "linker64") && !linker_base) {
-            char* addr = strtok(line, "-");
-            linker_base = strtoull(addr, NULL, 16);
-
-        }else if(strstr(line, so_name) && !so_addr) {
-            char* addr = strtok(line, "-");
-            so_addr = strtoull(addr, NULL, 16);
-
-        }
-
-        if(linker_base && so_addr)break;
-
-    }
-
-
-    ElfW(Addr) func_offset = Utils::get_export_func("/system/bin/linker64", "find_containing_library");
-    if(!func_offset) {
-        LOGE("func_offset == 0? check it ---> get_soinfo");
-        return nullptr;
-    }
-//    ElfW(Addr) find_containing_library_addr =  static_cast<ElfW(Addr)>(linker_base + 0x9AB0);
-    ElfW(Addr) find_containing_library_addr =  static_cast<ElfW(Addr)>(linker_base + func_offset);
-    FunctionPtr find_containing_library = reinterpret_cast<FunctionPtr>(find_containing_library_addr);
-
-    return find_containing_library(so_addr);
-}
-
-ElfW(Addr) Utils::call_ifunc_resolver(ElfW(Addr) resolver_addr) {
-    typedef ElfW(Addr) (*ifunc_resolver_t)(void);
-    ifunc_resolver_t ifunc_resolver = reinterpret_cast<ifunc_resolver_t>(resolver_addr);
-    ElfW(Addr) ifunc_addr = ifunc_resolver();
-
-    return ifunc_addr;
-}
-
-
-ElfW(Addr) Utils::get_addend(ElfW(Rela)* rela, ElfW(Addr) reloc_addr __unused) {
-    return rela->r_addend;
 }
 
 
@@ -647,17 +459,17 @@ bool soinfo::link_image() {
 
 #if defined(USE_RELA)
     if (rela_ != nullptr) {
-LOGD("[ relocating %s ]", get_realpath());
-if (!relocate(plain_reloc_iterator(rela_, rela_count_))) {
-  return false;
-}
-}
-if (plt_rela_ != nullptr) {
-LOGD("[ relocating %s plt ]", get_realpath());
-if (!relocate(plain_reloc_iterator(plt_rela_, plt_rela_count_))) {
-  return false;
-}
-}
+        LOGD("[ relocating %s ]", get_realpath());
+        if (!relocate(plain_reloc_iterator(rela_, rela_count_))) {
+          return false;
+        }
+    }
+    if (plt_rela_ != nullptr) {
+        LOGD("[ relocating %s plt ]", get_realpath());
+        if (!relocate(plain_reloc_iterator(plt_rela_, plt_rela_count_))) {
+          return false;
+        }
+    }
 #else
     LOGE("TODO: !defined(USE_RELA) ");
 #endif
@@ -673,7 +485,6 @@ if (!relocate(plain_reloc_iterator(plt_rela_, plt_rela_count_))) {
 
     return true;
 }
-
 
 
 template<typename ElfRelIteratorT>
@@ -692,6 +503,7 @@ bool soinfo::relocate(ElfRelIteratorT&& rel_iterator) {
         ElfW(Addr) reloc = static_cast<ElfW(Addr)>(rel->r_offset + load_bias);
         ElfW(Addr) sym_addr = 0;
         const char* sym_name = nullptr;
+        soinfo* lsi = nullptr;
         ElfW(Addr) addend = Utils::get_addend(rel, reloc);
 
 //        LOGD("Processing \"%s\" relocation at index %zd", get_realpath(), idx);
@@ -700,30 +512,34 @@ bool soinfo::relocate(ElfRelIteratorT&& rel_iterator) {
         }
 
         const ElfW(Sym)* s = nullptr;
-        soinfo* lsi = nullptr;
 
         if (sym != 0) {
 
             sym_name = get_string(symtab_[sym].st_name);
 //            LOGD("sym = %lx   sym_name: %s   st_value: %lx", sym, sym_name, symtab_[sym].st_value);
 
-
-            for(int s = 0; s < needed_count; s++) {
-                void* handle = dlopen(get_string(myneed[s]),RTLD_NOW);
-                sym_addr = reinterpret_cast<Elf64_Addr>(dlsym(handle, sym_name));
-                if(sym_addr) break;
-
+            if(soinfo_do_lookup(sym_name, &lsi, &s)) {
+                sym_addr = lsi->resolve_symbol_address(s);
+            } else {
+                for(int s = 0; s < needed_count; s++) {
+                    void* handle = dlopen(get_string(myneed[s]),RTLD_NOW);
+                    sym_addr = reinterpret_cast<Elf64_Addr>(dlsym(handle, sym_name));
+                    if(sym_addr) break;
+                }
             }
+
+            LOGD("sym_addr: 0x%lx (by dlsym)", sym_addr);
+
 
             if(!sym_addr) {
                 if(symtab_[sym].st_value != 0) {
                     sym_addr = load_bias + symtab_[sym].st_value;
                 }else {
-                    LOGE("%s find addr fail", sym_name);
+                    LOGE("%s find addr fail (sym: %lx)", sym_name, sym);
                 }
 
             }else {
-//                LOGD("%s find addr success : %lx", sym_name, sym_addr);
+                LOGD("%s find addr success : %lx", sym_name, sym_addr);
             }
         }
 
@@ -845,6 +661,7 @@ void soinfo::call_constructors() {
             init_array_[i](0, nullptr, nullptr);
         }
     }
+    LOGD("init_array_count_ = %d", init_array_count_);
 
 }
 
@@ -917,8 +734,8 @@ bool MyLoader::Load() {
     LOGD("si_ -> base: %lx", si_->base);
 
     // 使si_可以被修改
-    mprotect((void*) PAGE_START(reinterpret_cast<ElfW(Addr)>(si_)), 0x1000, PROT_READ | PROT_WRITE);
-
+    // fix bug: 由於不同Android版本的soinfo變化較大, 因此size設置大些會好點, 以前設置為0x1000, 在aosp8能用, 但aosp10會crash, 因此改為0x2000
+    mprotect((void*) PAGE_START(reinterpret_cast<ElfW(Addr)>(si_)), 0x2000, PROT_READ | PROT_WRITE);
     // 修正so
     si_->base = load_start();
     si_->size = load_size();
@@ -926,7 +743,6 @@ bool MyLoader::Load() {
     si_->load_bias = load_bias();
     si_->phnum = phdr_count();
     si_->phdr = loaded_phdr();
-
     return res;
 }
 
@@ -1135,6 +951,8 @@ void MyLoader::run(const char* path) {
     fstat(fd, &sb);
     start_addr_ = static_cast<void **>(mmap(NULL, sb.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0));
 
+    // 0. 預加載一些用到的模塊
+    Utils::load_modules();
 
     // 1. 讀取so文件
     if(!Read(path, fd, 0, sb.st_size)){

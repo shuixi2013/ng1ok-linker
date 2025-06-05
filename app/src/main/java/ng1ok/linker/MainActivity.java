@@ -30,7 +30,7 @@ public class MainActivity extends AppCompatActivity {
         TextView tv = binding.sampleText;
         tv.setText(stringFromJNI());
         test();
-        demo1Func();
+//        demo1Func();
     }
     public native String demo1Func();
     /**

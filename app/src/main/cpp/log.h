@@ -2,7 +2,7 @@
 
 
 
-#define  TAG    "nglog"
+#define  TAG    "nglog-linker"
 
 // 定義info信息
 

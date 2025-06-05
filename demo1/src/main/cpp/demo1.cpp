@@ -17,15 +17,14 @@ Java_ng1ok_demo1_NativeLib_stringFromJNI(
     return env->NewStringUTF(hello.c_str());
 }
 
+
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_ng1ok_linker_MainActivity_demo1Func(JNIEnv *env, jobject thiz) {
     LOGD("Java_ng1ok_linker_MainActivity_demo1Func calleeeeeeeddddddddd");
     std::string str = "Java_ng1ok_linker_MainActivity_demo1Func";
-
     return env->NewStringUTF(str.c_str());
 }
-
 
 __attribute__((constructor()))
 void sayHello(){
